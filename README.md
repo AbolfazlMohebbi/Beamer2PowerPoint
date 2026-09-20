@@ -247,3 +247,7 @@ degrade gracefully instead of failing. Tests needing Office's XSL skip themselve
   design instead.
 - Bibliographies (`\cite`) render as bracketed keys; no reference list is
   generated.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
