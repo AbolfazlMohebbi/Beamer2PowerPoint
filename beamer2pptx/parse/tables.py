@@ -168,6 +168,18 @@ def split_top_level(text: str, separator: str) -> List[str]:
     return parts
 
 
+def _skip_trim_spec(text: str, start: int) -> int:
+    r"""Skip a booktabs trim specifier such as the ``(lr)`` in ``\cmidrule(lr)``."""
+    i = start
+    while i < len(text) and text[i] in " \t":
+        i += 1
+    if i < len(text) and text[i] == "(":
+        close = text.find(")", i)
+        if close >= 0:
+            return close + 1
+    return start
+
+
 def _strip_rules(text: str) -> Tuple[str, List[str]]:
     """Pull leading rule macros off a row, returning the rest and their names."""
     found: List[str] = []
@@ -181,6 +193,7 @@ def _strip_rules(text: str) -> Tuple[str, List[str]]:
         found.append(m.group(1))
         i += m.end()
         _, i = find_optional(text, i)
+        i = _skip_trim_spec(text, i)
         if m.group(1) in ("cmidrule", "cline", "cdashline"):
             _, after = find_group(text, i)
             i = after
@@ -219,20 +232,31 @@ def parse_table(body: str, colspec: str, ctx: InlineContext,
         cells: List[Cell] = []
         col = 0
         for raw_cell in raw_cells:
-            # A cell held open by a \multirow above it.
-            while col in pending_rowspans and pending_rowspans[col] > 0:
+            # Close out any column held open by a \multirow above.  Correct
+            # LaTeX puts an empty placeholder cell there, which the span
+            # should swallow; a document that omits it still lines up,
+            # because a cell with content is carried past the span instead.
+            consumed = False
+            while pending_rowspans.get(col, 0) > 0:
                 pending_rowspans[col] -= 1
                 cells.append(Cell(merged=True, align=_align_at(aligns, col)))
                 col += 1
+                if not raw_cell.strip():
+                    consumed = True
+                    break
+            if consumed:
+                continue
+
             cell = _parse_cell(raw_cell, aligns, col, ctx)
             cell.top_rule = top_rule
             cells.append(cell)
-            for extra in range(1, cell.colspan):
+            for _extra in range(1, cell.colspan):
                 cells.append(Cell(merged=True, align=cell.align))
             if cell.rowspan > 1:
                 pending_rowspans[col] = cell.rowspan - 1
             col += cell.colspan
-        while col in pending_rowspans and pending_rowspans[col] > 0:
+        # A row may simply stop early; carry any remaining spans across.
+        while pending_rowspans.get(col, 0) > 0:
             pending_rowspans[col] -= 1
             cells.append(Cell(merged=True, align=_align_at(aligns, col)))
             col += 1

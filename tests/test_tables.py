@@ -101,6 +101,53 @@ def test_rows_are_padded_to_the_widest(ctx):
     assert all(len(row) == 3 for row in table.rows)
 
 
+def test_cmidrule_trim_specifier_is_consumed(ctx):
+    r"""``\cmidrule(lr){3-4}`` must not leak "(lr)3-4" into a cell."""
+    body = (r"\toprule A & B \\ \cmidrule(lr){1-2} 1 & 2 \\ \bottomrule")
+    table = parse_table(body, "ll", ctx)
+    rendered = " ".join(text(c) for row in table.rows for c in row)
+    assert "lr" not in rendered
+    assert "1-2" not in rendered
+    assert [text(c) for c in table.rows[1]] == ["1", "2"]
+
+
+def test_multirow_continuation_does_not_shift_columns(ctx):
+    r"""A continuation row supplies an empty cell for the spanned column.
+
+    That placeholder must be consumed by the span rather than pushing the
+    rest of the row one column to the right.
+    """
+    body = (r"\multirow{2}{*}{Group} & Alpha & 1 \\"
+            r"                       & Beta  & 2 \\")
+    table = parse_table(body, "llr", ctx)
+    assert len(table.col_aligns) == 3, table.col_aligns
+    assert all(len(row) == 3 for row in table.rows)
+    assert table.rows[0][0].rowspan == 2
+    assert table.rows[1][0].merged is True
+    assert [text(c) for c in table.rows[1][1:]] == ["Beta", "2"]
+
+
+def test_nested_header_with_multirow_and_multicolumn(ctx):
+    """The full booktabs header idiom: stacked spans in both directions."""
+    body = (
+        r"\toprule"
+        r"\multirow{2}{*}{Cohort} & \multicolumn{2}{c}{Error} & "
+        r"\multirow{2}{*}{Rate} \\"
+        r"\cmidrule(lr){2-3} "
+        r" & Peak & RMS & \\"
+        r"\midrule "
+        r"Healthy & 4.1 & 2.3 & 118 \\"
+        r"\bottomrule"
+    )
+    table = parse_table(body, "lrrr", ctx)
+    assert len(table.col_aligns) == 4
+    assert all(len(row) == 4 for row in table.rows)
+    assert table.rows[0][0].rowspan == 2 and text(table.rows[0][0]) == "Cohort"
+    assert table.rows[0][1].colspan == 2 and text(table.rows[0][1]) == "Error"
+    assert [text(c) for c in table.rows[1]] == ["", "Peak", "RMS", ""]
+    assert [text(c) for c in table.rows[2]] == ["Healthy", "4.1", "2.3", "118"]
+
+
 def test_escaped_ampersand_is_not_a_separator(ctx):
     table = parse_table(r"AT\&T & other \\", "ll", ctx)
     assert len(table.rows[0]) == 2

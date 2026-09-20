@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -69,7 +70,39 @@ def normalise_latex(latex: str) -> str:
     text = latex.strip()
     for pattern, replacement in _PREPROCESS:
         text = pattern.sub(replacement, text)
+    text = _promote_norm_delimiters(text)
     return _strip_alignment_ampersands(text).strip()
+
+
+_BARE_NORM_RE = re.compile(r"(?<!\\)\\\|")
+
+
+def _promote_norm_delimiters(text: str) -> str:
+    r"""Turn ``\|x\|`` into ``\left\|x\right\|``.
+
+    Office's MathML-to-OMML stylesheet drops the entire contents of a norm
+    that carries a sub- or superscript — ``\|x\|_2^2`` converts to an empty
+    delimiter — because latex2mathml emits the bars as loose operators rather
+    than a fenced group.  The ``\left``/``\right`` form produces the nested
+    structure the stylesheet expects, and renders identically.
+    """
+    text = (text.replace(r"\lVert", r"\left\|").replace(r"\rVert", r"\right\|")
+                .replace(r"\lvert", r"\left|").replace(r"\rvert", r"\right|"))
+
+    # Leave alone any bar that is already qualified.
+    masked = text.replace(r"\left\|", "\x01").replace(r"\right\|", "\x02")
+    positions = [m.start() for m in _BARE_NORM_RE.finditer(masked)]
+    if positions and len(positions) % 2 == 0:
+        pieces = []
+        previous = 0
+        for index, start in enumerate(positions):
+            pieces.append(masked[previous:start])
+            pieces.append(r"\left\|" if index % 2 == 0 else r"\right\|")
+            previous = start + 2
+        pieces.append(masked[previous:])
+        masked = "".join(pieces)
+
+    return masked.replace("\x01", r"\left\|").replace("\x02", r"\right\|")
 
 
 def _strip_alignment_ampersands(text: str) -> str:
@@ -168,7 +201,155 @@ class MathConverter:
             # An empty conversion is worse than no conversion.
             self.failures.append(_short(latex))
             return None
+
+        # The stylesheet can silently drop a sub-expression rather than fail.
+        # A formula that is quietly missing a term is far worse than one
+        # rendered as a picture, so verify nothing was lost before accepting.
+        missing = _lost_content(tree, root)
+        if missing:
+            self.failures.append("%s [%s]" % (_short(latex), missing))
+            return None
+
+        _flatten_operator_separators(root)
+        _isolate_astral_runs(root)
         return root
+
+
+#: Structural slots that carry an expression and must never come back empty.
+#: Deliberately excludes ``deg`` (a plain square root has no degree) and
+#: ``sub``/``sup`` (an n-ary operator may carry only one limit).
+_REQUIRED_SLOTS = ("e", "num", "den", "fName")
+
+
+def _alnum(text: str) -> str:
+    """The characters whose loss would actually change the formula.
+
+    Punctuation is excluded on purpose: OMML stores fences, accents and
+    n-ary symbols as attributes rather than text, and omits them entirely
+    when they are the default for the construct, so comparing them would
+    flag perfectly good conversions.
+    """
+    return "".join(c for c in (text or "") if c.isalnum())
+
+
+def _lost_content(mathml_root, omml_root) -> Optional[str]:
+    """Describe what the stylesheet dropped, or ``None`` if nothing was."""
+    for tag in _REQUIRED_SLOTS:
+        for element in omml_root.iter("{%s}%s" % (M_NAMESPACE, tag)):
+            if len(element) == 0 and not (element.text or "").strip():
+                return "empty <m:%s>" % tag
+
+    source = _alnum("".join(mathml_root.itertext()))
+    produced = _alnum("".join(
+        "".join(e.itertext()) for e in omml_root.iter("{%s}t" % M_NAMESPACE)))
+
+    missing = Counter(source) - Counter(produced)
+    if missing:
+        return "dropped %r" % "".join(sorted(missing.elements()))[:12]
+    return None
+
+
+#: Characters that really do separate the slots of a delimiter, as in
+#: ``(a, b)``.  Anything else the stylesheet puts in ``m:sepChr`` is an
+#: operator it mis-filed, not a separator.
+_TRUE_SEPARATORS = {",", ";", "|", "‖", ""}
+
+
+def _flatten_operator_separators(root) -> None:
+    r"""Rebuild delimiters whose "separator" is really an operator.
+
+    For ``\left\|p - \Phi w\right\|`` the stylesheet emits a delimiter with
+    two slots and ``m:sepChr`` set to the minus sign.  PowerPoint draws that
+    separator as an arrow rather than a minus, and the structure is wrong in
+    any case: the minus belongs inside the norm, not between two arguments.
+    Merging the slots back into one and inserting the operator as an ordinary
+    run gives what the author wrote.
+    """
+    d_tag = "{%s}d" % M_NAMESPACE
+    for delimiter in list(root.iter(d_tag)):
+        properties = delimiter.find("{%s}dPr" % M_NAMESPACE)
+        if properties is None:
+            continue
+        separator = properties.find("{%s}sepChr" % M_NAMESPACE)
+        if separator is None:
+            continue
+        value = separator.get("{%s}val" % M_NAMESPACE) or ""
+        if value in _TRUE_SEPARATORS:
+            continue
+
+        slots = delimiter.findall("{%s}e" % M_NAMESPACE)
+        if len(slots) < 2:
+            continue
+
+        first = slots[0]
+        for slot in slots[1:]:
+            run = first.makeelement("{%s}r" % M_NAMESPACE, {})
+            text = first.makeelement("{%s}t" % M_NAMESPACE, {})
+            text.text = value
+            run.append(text)
+            first.append(run)
+            for child in list(slot):
+                first.append(child)
+            delimiter.remove(slot)
+        separator.set("{%s}val" % M_NAMESPACE, "")
+
+
+def split_on_astral(text: str) -> List[str]:
+    """Split *text* so each non-BMP character stands alone."""
+    pieces: List[str] = []
+    buffer = ""
+    for char in text:
+        if ord(char) > 0xFFFF:
+            if buffer:
+                pieces.append(buffer)
+                buffer = ""
+            pieces.append(char)
+        else:
+            buffer += char
+    if buffer:
+        pieces.append(buffer)
+    return pieces
+
+
+def _isolate_astral_runs(root) -> None:
+    r"""Give every non-BMP character in the expression its own run.
+
+    PowerPoint renders only the *first* non-BMP character of a maths run and
+    silently drops any that follow, so ``\mathbf{r} = \mathbf{p} - \Phi``
+    arrives as one run "𝐫=𝐩−Φ" and displays as "𝐫=−Φ".  Bold, italic,
+    script and fraktur letters all live above U+FFFF, so this hits ordinary
+    vector notation constantly.
+
+    Splitting the run changes nothing but structure — the characters and
+    their order are identical, and it is how PowerPoint stores such runs
+    itself.
+    """
+    from copy import deepcopy
+
+    run_tag = "{%s}r" % M_NAMESPACE
+    text_tag = "{%s}t" % M_NAMESPACE
+
+    for run in list(root.iter(run_tag)):
+        text_element = run.find(text_tag)
+        if text_element is None or not text_element.text:
+            continue
+        text = text_element.text
+        if len(text) < 2 or all(ord(c) <= 0xFFFF for c in text):
+            continue
+
+        pieces = split_on_astral(text)
+        if len(pieces) < 2:
+            continue
+
+        parent = run.getparent()
+        if parent is None:
+            continue
+        position = list(parent).index(run)
+        for offset, piece in enumerate(pieces):
+            clone = deepcopy(run)
+            clone.find(text_tag).text = piece
+            parent.insert(position + offset, clone)
+        parent.remove(run)
 
 
 def _short(latex: str, limit: int = 60) -> str:

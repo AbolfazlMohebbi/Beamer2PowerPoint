@@ -12,6 +12,23 @@ figure is extracted or rendered into a `figures/` folder next to the output.
 python beamer2pptx.py talk.tex -o talk.pptx --template template.pptx
 ```
 
+## What it looks like
+
+All four slides below were produced by one command from
+[`examples/demo/demo.tex`](examples/demo/demo.tex), an ordinary Beamer talk,
+onto the PowerPoint template in this repository. Nothing was touched by hand.
+
+```bash
+python beamer2pptx.py examples/demo/demo.tex -o out/demo.pptx
+```
+
+| | |
+|:--:|:--:|
+| [![Title slide](docs/images/demo-title-slide.jpg)](docs/images/demo-title-slide.jpg) | [![Native equations](docs/images/demo-equations.png)](docs/images/demo-equations.png) |
+| **The template drives the design.** `\titlepage` fills the template's own title layout — its photo, colours and fonts are untouched — with the title, author, institute and date taken from the Beamer preamble. | **Equations are real PowerPoint equations.** Inline and display maths, `align` blocks and matrices become native OMML you can click into and edit. Nothing here is a picture. |
+| [![Native table](docs/images/demo-table.png)](docs/images/demo-table.png) | [![Vector TikZ](docs/images/demo-tikz-vector.png)](docs/images/demo-tikz-vector.png) |
+| **Tables are real tables.** A booktabs table with a nested `\multicolumn` header, `\multirow` labels and `\cmidrule` rules becomes a native PowerPoint table — editable cells, not an image. | **TikZ and pgfplots stay vector.** Compiled with LaTeX for correct geometry, then embedded as SVG: sharp at any zoom, and convertible to native shapes. |
+
 ## What it converts
 
 | Beamer | PowerPoint |
@@ -218,7 +235,9 @@ beamer2pptx/
     layout.py             measurement and fitting
     slidebuilder.py       writes the slides
     oxml.py               raw OOXML helpers
+examples/demo/            a full demonstration deck (source of the screenshots)
 tests/                    pytest suite, with fixture decks
+docs/images/              README screenshots
 ```
 
 Parsing and emission are deliberately separated by the IR in `ir.py`: the
@@ -247,6 +266,12 @@ degrade gracefully instead of failing. Tests needing Office's XSL skip themselve
   design instead.
 - Bibliographies (`\cite`) render as bracketed keys; no reference list is
   generated.
+
+## Author
+
+**Abolfazl Mohebbi**, PhD., P. Eng.  
+Professor in Mechanical and Biomedical Engineering  
+Polytechnique Montréal
 
 ## License
 
