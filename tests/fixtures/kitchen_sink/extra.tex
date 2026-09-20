@@ -1,0 +1,24 @@
+% Pulled in with \input to exercise multi-file projects.
+\begin{frame}{From an included file}
+  \begin{columns}
+    \begin{column}{0.5\textwidth}
+      \begin{itemize}
+        \item Left column
+        \item Resolved through \texttt{graphicspath}
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.5\textwidth}
+      \includegraphics[width=\textwidth]{vector.pdf}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{A theorem environment}
+  \begin{theorem}[Convergence]
+    The iteration converges whenever $\rho(A) < 1$.
+  \end{theorem}
+  \begin{description}
+    \item[Input] a matrix $A \in \R^{n \times n}$
+    \item[Output] the fixed point $x^\star$
+  \end{description}
+\end{frame}
